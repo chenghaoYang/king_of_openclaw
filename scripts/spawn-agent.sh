@@ -151,32 +151,43 @@ echo ""
 echo "[3/5] Registering task in active-tasks.json..."
 
 NOW_MS=$(date +%s)000
-TASK_JSON=$(cat <<EOF
-{
-  "id": "$TASK_ID",
-  "tmuxSession": "$TMUX_SESSION",
-  "agent": "$AGENT_TYPE",
-  "model": "${MODEL:-default}",
-  "description": "$DESCRIPTION",
-  "repo": "$(basename "$REPO_ROOT")",
-  "worktree": "$TASK_ID",
-  "branch": "$BRANCH",
-  "startedAt": $NOW_MS,
-  "status": "running",
-  "retryCount": 0,
-  "notifyOnComplete": true
-}
-EOF
-)
 
 if command -v jq &>/dev/null; then
-    # Use jq to properly add to the tasks array
+    # Build JSON safely with jq --arg to prevent injection from special characters
+    TASK_JSON=$(jq -n \
+        --arg id "$TASK_ID" \
+        --arg tmux "$TMUX_SESSION" \
+        --arg agent "$AGENT_TYPE" \
+        --arg model "${MODEL:-default}" \
+        --arg desc "$DESCRIPTION" \
+        --arg repo "$(basename "$REPO_ROOT")" \
+        --arg worktree "$TASK_ID" \
+        --arg branch "$BRANCH" \
+        --arg prompt "$PROMPT" \
+        --argjson started "$NOW_MS" \
+        '{
+            id: $id,
+            tmuxSession: $tmux,
+            agent: $agent,
+            model: $model,
+            description: $desc,
+            repo: $repo,
+            worktree: $worktree,
+            branch: $branch,
+            prompt: $prompt,
+            startedAt: $started,
+            status: "running",
+            retryCount: 0,
+            notifyOnComplete: true
+        }')
+
+    # Atomic write: write to tmp then rename to prevent corruption
     UPDATED=$(jq --argjson task "$TASK_JSON" '
         .tasks += [$task] |
         .metadata.totalSpawned += 1 |
-        .metadata.lastChecked = now
+        .metadata.lastChecked = (now * 1000 | floor)
     ' "$TASKS_FILE")
-    echo "$UPDATED" > "$TASKS_FILE"
+    echo "$UPDATED" > "$TASKS_FILE.tmp" && mv "$TASKS_FILE.tmp" "$TASKS_FILE"
 else
     echo "  WARNING: jq not found. Task not registered in JSON. Install jq for full functionality."
 fi
@@ -190,11 +201,12 @@ echo "[4/5] Starting tmux session: $TMUX_SESSION"
 # Kill existing session if it exists
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 
-# Build the agent command
-AGENT_CMD="$SCRIPT_DIR/run-agent.sh '$TASK_ID' '$AGENT_TYPE' '${MODEL:-default}' '$EFFORT' '$PROMPT'"
+# Build the agent command with proper escaping via printf %q
+AGENT_CMD=$(printf '%q %q %q %q %q %q' \
+    "$SCRIPT_DIR/run-agent.sh" "$TASK_ID" "$AGENT_TYPE" "${MODEL:-default}" "$EFFORT" "$PROMPT")
 
 # Create tmux session and run the agent
-tmux new-session -d -s "$TMUX_SESSION" -c "$WORKTREE_PATH" "$AGENT_CMD"
+tmux new-session -d -s "$TMUX_SESSION" -c "$WORKTREE_PATH" "bash -c $AGENT_CMD"
 
 echo "  tmux session started. Attach with: tmux attach -t $TMUX_SESSION"
 

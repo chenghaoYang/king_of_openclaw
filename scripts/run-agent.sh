@@ -44,6 +44,8 @@ run_codex() {
 }
 
 run_claude() {
+    # Note: Claude Code CLI does not support a reasoning effort parameter.
+    # The $EFFORT variable is only used by Codex.
     claude --model "$MODEL" \
         --dangerously-skip-permissions \
         -p "$PROMPT" 2>&1 | tee -a "$LOG_FILE"

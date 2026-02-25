@@ -2,28 +2,20 @@
 // =============================================================================
 // orchestrator.js — Zoe: The OpenClaw Agent Orchestrator
 //
-// This is the brain of the swarm. Zoe:
-//   1. Scans for new work (Sentry errors, meeting notes, git log)
-//   2. Picks the right agent for each task
-//   3. Writes context-rich prompts
-//   4. Spawns agents via spawn-agent.sh
-//   5. Monitors progress via check-agents.sh
-//   6. Handles failures with improved prompts (Ralph Loop V2)
-//
 // Usage: node scripts/orchestrator.js [command]
 //   commands:
-//     spawn   — Spawn a new agent interactively
+//     spawn   — Spawn a new agent
 //     status  — Show status of all agents
 //     check   — Run the agent monitor
 //     review  — Trigger code review on a PR
 //     cleanup — Run worktree cleanup
 //     list    — List all tasks
-//
-// For automated orchestration, Zoe should be invoked by the AI orchestrator
-// (OpenClaw) which handles the strategic decision-making layer.
+//     route   — Show which agent would handle a task type
+//     respawn — Respawn a failed task with improved context
+//     learn   — Record a learning from a task
 // =============================================================================
 
-const { execSync, spawn } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -37,13 +29,19 @@ const LEARNINGS_DIR = path.join(REPO_ROOT, ".clawdbot", "learnings");
 function loadJSON(filepath) {
   try {
     return JSON.parse(fs.readFileSync(filepath, "utf-8"));
-  } catch {
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      console.error(`Warning: Failed to parse ${filepath}: ${e.message}`);
+    }
     return null;
   }
 }
 
 function saveJSON(filepath, data) {
-  fs.writeFileSync(filepath, JSON.stringify(data, null, 2) + "\n");
+  // Atomic write: write to tmp file then rename to prevent corruption
+  const tmp = filepath + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
+  fs.renameSync(tmp, filepath);
 }
 
 function run(cmd, opts = {}) {
@@ -60,37 +58,53 @@ function run(cmd, opts = {}) {
   }
 }
 
-function runSilent(cmd) {
-  return run(cmd, { silent: true, stdio: "pipe" }).trim();
+// Safe execution: uses execFileSync to avoid shell injection
+function runFile(command, args, opts = {}) {
+  try {
+    return execFileSync(command, args, {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+      stdio: opts.silent ? "pipe" : "inherit",
+      ...opts,
+    });
+  } catch (e) {
+    if (opts.silent) return e.stdout || "";
+    throw e;
+  }
 }
 
 // --- Agent Selection ---
 
-const AGENT_ROUTING = {
-  backend: "codex",
-  bugs: "codex",
-  refactors: "codex",
-  "multi-file": "codex",
-  complex: "codex",
-  api: "codex",
-  database: "codex",
-  frontend: "claude",
-  "git-ops": "claude",
-  "quick-fixes": "claude",
-  ui: "claude",
-  styling: "claude",
-  "ui-design": "gemini",
-  "html-css-spec": "gemini",
-  design: "gemini",
-};
+// Ordered from most specific to least specific to prevent substring false matches.
+// e.g. "ui-design" must match gemini before "ui" matches claude.
+const AGENT_ROUTING = [
+  ["ui-design", "gemini"],
+  ["html-css-spec", "gemini"],
+  ["design", "gemini"],
+  ["multi-file", "codex"],
+  ["quick-fixes", "claude"],
+  ["git-ops", "claude"],
+  ["backend", "codex"],
+  ["bugs", "codex"],
+  ["refactors", "codex"],
+  ["complex", "codex"],
+  ["api", "codex"],
+  ["database", "codex"],
+  ["frontend", "claude"],
+  ["ui", "claude"],
+  ["styling", "claude"],
+];
 
 function selectAgent(taskType) {
-  const config = loadJSON(CONFIG_FILE);
-  if (!config) return "codex"; // Default fallback
-
-  // Check routing table
   const normalized = taskType.toLowerCase();
-  for (const [key, agent] of Object.entries(AGENT_ROUTING)) {
+
+  // Exact match first
+  for (const [key, agent] of AGENT_ROUTING) {
+    if (normalized === key) return agent;
+  }
+
+  // Substring match (already ordered most specific → least specific)
+  for (const [key, agent] of AGENT_ROUTING) {
     if (normalized.includes(key)) return agent;
   }
 
@@ -130,15 +144,15 @@ function listTasks(filter) {
   for (const task of tasks) {
     const statusIcon =
       {
-        running: "🔄",
-        agent_completed: "✅",
-        pr_created: "📝",
-        ci_passed: "✅",
-        ci_failed: "❌",
-        agent_failed: "💥",
-        done: "🎉",
-        cancelled: "🚫",
-      }[task.status] || "❓";
+        running: "[~]",
+        agent_completed: "[+]",
+        pr_created: "[PR]",
+        ci_passed: "[CI+]",
+        ci_failed: "[CI!]",
+        agent_failed: "[!!]",
+        done: "[OK]",
+        cancelled: "[--]",
+      }[task.status] || "[?]";
 
     console.log(`  ${statusIcon} ${task.id} (${task.status})`);
     console.log(`     ${task.description}`);
@@ -174,6 +188,28 @@ function recordLearning(taskId, outcome, notes) {
   fs.appendFileSync(file, JSON.stringify(learning) + "\n");
 }
 
+function loadLearningsForTask(taskId) {
+  if (!fs.existsSync(LEARNINGS_DIR)) return [];
+
+  const files = fs.readdirSync(LEARNINGS_DIR).filter((f) => f.endsWith(".jsonl"));
+  const learnings = [];
+
+  for (const file of files) {
+    const content = fs.readFileSync(path.join(LEARNINGS_DIR, file), "utf-8").trim();
+    if (!content) continue;
+    for (const line of content.split("\n")) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.taskId === taskId) learnings.push(entry);
+      } catch {
+        // skip malformed lines
+      }
+    }
+  }
+
+  return learnings;
+}
+
 // --- Respawn with Improved Prompt (Ralph Loop V2) ---
 
 function respawnWithContext(taskId, failureReason) {
@@ -186,8 +222,9 @@ function respawnWithContext(taskId, failureReason) {
 
   const config = loadJSON(CONFIG_FILE);
   const maxRetries = config?.orchestrator?.maxRetries || 3;
+  const retryCount = task.retryCount || 0;
 
-  if (task.retryCount >= maxRetries) {
+  if (retryCount >= maxRetries) {
     console.log(
       `Task '${taskId}' has reached max retries (${maxRetries}). Needs human attention.`
     );
@@ -196,7 +233,7 @@ function respawnWithContext(taskId, failureReason) {
   }
 
   console.log(
-    `\nRespawning '${taskId}' (attempt ${task.retryCount + 1}/${maxRetries})...`
+    `\nRespawning '${taskId}' (attempt ${retryCount + 1}/${maxRetries})...`
   );
   console.log(`Failure reason: ${failureReason}`);
 
@@ -206,10 +243,7 @@ function respawnWithContext(taskId, failureReason) {
 
   if (failureReason.includes("context") || failureReason.includes("timeout")) {
     improvedHints = "IMPORTANT: Focus only on the most critical files. Do not try to read the entire codebase.";
-  } else if (
-    failureReason.includes("CI") ||
-    failureReason.includes("test")
-  ) {
+  } else if (failureReason.includes("CI") || failureReason.includes("test")) {
     improvedHints = "IMPORTANT: Run tests before creating the PR. Fix any failing tests.";
   } else if (failureReason.includes("wrong direction")) {
     improvedHints = "IMPORTANT: Re-read the requirements carefully. The previous attempt went in the wrong direction.";
@@ -222,32 +256,47 @@ function respawnWithContext(taskId, failureReason) {
   }
 
   console.log(`Improved hints: ${improvedHints || "(none)"}`);
+  recordLearning(taskId, "respawned", `Attempt ${retryCount + 1}: ${failureReason}`);
 
-  recordLearning(taskId, "respawned", `Attempt ${task.retryCount + 1}: ${failureReason}`);
-}
-
-function loadLearningsForTask(taskId) {
-  if (!fs.existsSync(LEARNINGS_DIR)) return [];
-
-  const files = fs.readdirSync(LEARNINGS_DIR).filter((f) => f.endsWith(".jsonl"));
-  const learnings = [];
-
-  for (const file of files) {
-    const lines = fs
-      .readFileSync(path.join(LEARNINGS_DIR, file), "utf-8")
-      .trim()
-      .split("\n");
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.taskId === taskId) learnings.push(entry);
-      } catch {
-        // skip malformed lines
-      }
-    }
+  // Build the new prompt from original + improved hints
+  const originalPrompt = task.prompt || "";
+  if (!originalPrompt) {
+    console.error(
+      `No original prompt stored for task '${taskId}'. Cannot auto-respawn.`
+    );
+    console.error(
+      `Re-spawn manually: node scripts/orchestrator.js spawn ${taskId} ${task.agent} "<prompt>"`
+    );
+    return;
   }
 
-  return learnings;
+  const newPrompt = `${originalPrompt}\n\n--- RETRY CONTEXT (attempt ${retryCount + 1}) ---\nPrevious failure: ${failureReason}\n${improvedHints}`;
+
+  // Update task status back to running
+  const taskIndex = data.tasks.findIndex((t) => t.id === taskId);
+  if (taskIndex >= 0) {
+    data.tasks[taskIndex].retryCount = retryCount + 1;
+    data.tasks[taskIndex].status = "running";
+    data.tasks[taskIndex].lastUpdated = Date.now();
+    data.tasks[taskIndex].prompt = newPrompt;
+    saveJSON(TASKS_FILE, data);
+  }
+
+  // Actually respawn the agent (using execFileSync to avoid shell injection)
+  const agentConfig = getAgentConfig(task.agent);
+  try {
+    runFile("./scripts/spawn-agent.sh", [
+      "--task-id", taskId,
+      "--agent", task.agent,
+      "--model", agentConfig.model || task.model || "default",
+      "--effort", "high",
+      "--prompt", newPrompt,
+      "--branch", task.branch,
+    ]);
+    console.log(`Agent respawned for task '${taskId}'.`);
+  } catch (e) {
+    console.error(`Failed to respawn agent: ${e.message}`);
+  }
 }
 
 // --- Commands ---
@@ -271,7 +320,12 @@ switch (command) {
       console.error("Usage: orchestrator.js review <pr-number>");
       process.exit(1);
     }
-    run(`./scripts/review-pr.sh ${prNumber}`);
+    // Validate PR number is strictly numeric to prevent command injection
+    if (!/^\d+$/.test(prNumber)) {
+      console.error("Error: PR number must be a positive integer.");
+      process.exit(1);
+    }
+    runFile("./scripts/review-pr.sh", [prNumber]);
     break;
   }
 
@@ -281,9 +335,20 @@ switch (command) {
     break;
 
   case "spawn": {
-    const taskId = process.argv[3];
-    const agentType = process.argv[4] || "codex";
-    const prompt = process.argv[5];
+    // Support both: spawn <id> <type> "<prompt>" and spawn <id> "<prompt>"
+    let taskId, agentType, prompt;
+
+    if (process.argv.length === 5) {
+      // orchestrator.js spawn <id> "<prompt>" (2-arg form, default agent)
+      taskId = process.argv[3];
+      agentType = "codex";
+      prompt = process.argv[4];
+    } else {
+      // orchestrator.js spawn <id> <type> "<prompt>" (3-arg form)
+      taskId = process.argv[3];
+      agentType = process.argv[4] || "codex";
+      prompt = process.argv[5];
+    }
 
     if (!taskId || !prompt) {
       console.error(
@@ -292,13 +357,33 @@ switch (command) {
       process.exit(1);
     }
 
+    // Enforce max concurrent agents
+    const spawnConfig = loadJSON(CONFIG_FILE);
+    const maxConcurrent = spawnConfig?.orchestrator?.maxConcurrentAgents || 5;
+    const spawnData = loadTasks();
+    const running = spawnData.tasks.filter((t) => t.status === "running").length;
+    if (running >= maxConcurrent) {
+      console.error(
+        `Cannot spawn: ${running} agents already running (max: ${maxConcurrent}).`
+      );
+      console.error(
+        "Wait for agents to finish or increase maxConcurrentAgents in config."
+      );
+      process.exit(1);
+    }
+
     const agentConfig = getAgentConfig(agentType);
     console.log(`\nSpawning ${agentType} agent for task '${taskId}'...`);
     console.log(`Model: ${agentConfig.model}`);
 
-    run(
-      `./scripts/spawn-agent.sh --task-id "${taskId}" --agent "${agentType}" --model "${agentConfig.model}" --prompt "${prompt.replace(/"/g, '\\"')}"`
-    );
+    // Use execFileSync to avoid shell injection
+    runFile("./scripts/spawn-agent.sh", [
+      "--task-id", taskId,
+      "--agent", agentType,
+      "--model", agentConfig.model || "default",
+      "--effort", agentConfig.reasoningEffort || "high",
+      "--prompt", prompt,
+    ]);
     break;
   }
 
@@ -310,10 +395,10 @@ switch (command) {
       process.exit(1);
     }
     const agent = selectAgent(taskType);
-    const config = getAgentConfig(agent);
+    const routeConfig = getAgentConfig(agent);
     console.log(`\nTask type: ${taskType}`);
     console.log(`Recommended agent: ${agent}`);
-    console.log(`Model: ${config.model}`);
+    console.log(`Model: ${routeConfig.model}`);
     break;
   }
 
@@ -333,7 +418,9 @@ switch (command) {
     const outcome = process.argv[4];
     const notes = process.argv[5];
     if (!lTaskId || !outcome) {
-      console.error('Usage: orchestrator.js learn <task-id> <outcome> "<notes>"');
+      console.error(
+        'Usage: orchestrator.js learn <task-id> <outcome> "<notes>"'
+      );
       process.exit(1);
     }
     recordLearning(lTaskId, outcome, notes);
@@ -341,6 +428,9 @@ switch (command) {
     break;
   }
 
+  case "-h":
+  case "--help":
+  case "help":
   default:
     console.log(`
 OpenClaw Orchestrator (Zoe)

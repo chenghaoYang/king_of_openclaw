@@ -15,9 +15,6 @@
     "cron:install": "./scripts/install-crons.sh",
     "cron:remove": "./scripts/remove-crons.sh"
   },
-  "dependencies": {
-    "node-cron": "^3.0.3"
-  },
   "engines": {
     "node": ">=18.0.0"
   }

@@ -31,7 +31,7 @@ fi
 
 NOW_MS=$(date +%s)000
 
-# Update the task
+# Update the task (using consistent millisecond timestamps)
 UPDATED=$(jq --arg id "$TASK_ID" --arg status "$NEW_STATUS" --arg note "$NOTE" --argjson now "$NOW_MS" '
     .tasks = [
         .tasks[] |
@@ -40,16 +40,17 @@ UPDATED=$(jq --arg id "$TASK_ID" --arg status "$NEW_STATUS" --arg note "$NOTE" -
             .lastUpdated = $now |
             if $note != "" then .note = $note else . end |
             if $status == "done" or $status == "agent_completed" then .completedAt = $now else . end |
-            if $status == "agent_failed" then .retryCount = (.retryCount + 1) else . end
+            if $status == "agent_failed" then .retryCount = ((.retryCount // 0) + 1) else . end
         else .
         end
     ] |
-    .metadata.lastChecked = now |
+    .metadata.lastChecked = (now * 1000 | floor) |
     if $status == "done" then .metadata.totalCompleted += 1 else . end |
     if $status == "agent_failed" then .metadata.totalFailed += 1 else . end
 ' "$TASKS_FILE")
 
-echo "$UPDATED" > "$TASKS_FILE"
+# Atomic write: write to tmp then rename
+echo "$UPDATED" > "$TASKS_FILE.tmp" && mv "$TASKS_FILE.tmp" "$TASKS_FILE"
 echo "Task '$TASK_ID' updated to status: $NEW_STATUS"
 
 # Trigger notification for important status changes

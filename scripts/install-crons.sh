@@ -16,23 +16,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "Installing OpenClaw cron jobs..."
 
-# Marker to identify our cron entries
-MARKER="# OpenClaw Agent Swarm"
+# Marker to identify our cron entries (unique enough to not match other projects)
+MARKER="# OPENCLAW_AGENT_SWARM"
 
-# Build cron entries
-CRON_ENTRIES="
-$MARKER — Agent Monitor (every 10 min)
+# Build cron entries (no leading newline)
+CRON_ENTRIES="${MARKER} — Agent Monitor (every 10 min)
 */10 * * * * cd $REPO_ROOT && ./scripts/check-agents.sh >> .clawdbot/logs/monitor.log 2>&1
-$MARKER — Daily Cleanup (2 AM)
-0 2 * * * cd $REPO_ROOT && ./scripts/cleanup-worktrees.sh >> .clawdbot/logs/cleanup.log 2>&1
-"
+${MARKER} — Daily Cleanup (2 AM)
+0 2 * * * cd $REPO_ROOT && ./scripts/cleanup-worktrees.sh >> .clawdbot/logs/cleanup.log 2>&1"
 
-# Remove existing OpenClaw entries and add new ones
+# Remove existing OpenClaw entries (only match our specific marker) and add new ones
 EXISTING_CRON=$(crontab -l 2>/dev/null || echo "")
-CLEANED_CRON=$(echo "$EXISTING_CRON" | grep -v "$MARKER" | grep -v "check-agents.sh" | grep -v "cleanup-worktrees.sh" || true)
+CLEANED_CRON=$(echo "$EXISTING_CRON" | grep -v "$MARKER" || true)
 
-echo "$CLEANED_CRON
-$CRON_ENTRIES" | crontab -
+# Combine, removing any trailing blank lines from cleaned cron
+printf '%s\n%s\n' "$CLEANED_CRON" "$CRON_ENTRIES" | crontab -
 
 echo "Cron jobs installed successfully!"
 echo ""

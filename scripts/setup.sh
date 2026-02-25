@@ -78,6 +78,7 @@ if [ $ERRORS -gt 0 ]; then
     echo ""
     echo "  ⚠ $ERRORS required tools missing. Install them and re-run setup."
     echo ""
+    exit 1
 fi
 
 # --- Create directories ---
@@ -119,6 +120,44 @@ if [ -f "$REPO_ROOT/.clawdbot/config.json" ]; then
     echo "  Config file exists: .clawdbot/config.json"
 else
     echo "  Creating default config..."
+    cat > "$REPO_ROOT/.clawdbot/config.json" << 'CONFIGEOF'
+{
+  "orchestrator": {
+    "name": "Zoe",
+    "checkIntervalMinutes": 10,
+    "maxRetries": 3,
+    "maxConcurrentAgents": 5
+  },
+  "agents": {
+    "codex": {
+      "model": "gpt-5.3-codex",
+      "reasoningEffort": "high"
+    },
+    "claude": {
+      "model": "claude-opus-4.5"
+    },
+    "gemini": {
+      "model": "gemini-2.5-pro"
+    }
+  },
+  "reviewers": {
+    "codex": { "enabled": true, "model": "gpt-5.3-codex" },
+    "gemini": { "enabled": true },
+    "claude": { "enabled": true, "model": "claude-opus-4.5" }
+  },
+  "notifications": {
+    "telegram": {
+      "enabled": false,
+      "botToken": "",
+      "chatId": ""
+    }
+  },
+  "paths": {
+    "worktreeBase": "../worktrees"
+  }
+}
+CONFIGEOF
+    echo "  Created: .clawdbot/config.json"
     echo "  ⚠ Edit .clawdbot/config.json to configure Telegram and agent preferences"
 fi
 

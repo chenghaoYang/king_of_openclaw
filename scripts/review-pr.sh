@@ -13,19 +13,29 @@
 set -euo pipefail
 
 PR_NUMBER="${1:?Usage: review-pr.sh <pr-number> [--models codex,claude,gemini]}"
+shift
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROMPTS_DIR="$REPO_ROOT/.clawdbot/prompts"
+CONFIG_FILE="$REPO_ROOT/.clawdbot/config.json"
 
 # Parse optional --models flag
 MODELS="codex,claude"
-while [[ $# -gt 1 ]]; do
-    case $2 in
-        --models) MODELS="$3"; shift 2 ;;
-        *) shift ;;
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --models) MODELS="${2:?--models requires a value}"; shift 2 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Read reviewer models from config (with fallbacks)
+CODEX_MODEL="gpt-5.3-codex"
+CLAUDE_MODEL="claude-opus-4.5"
+if command -v jq &>/dev/null && [ -f "$CONFIG_FILE" ]; then
+    CODEX_MODEL=$(jq -r '.reviewers.codex.model // "gpt-5.3-codex"' "$CONFIG_FILE" 2>/dev/null || echo "gpt-5.3-codex")
+    CLAUDE_MODEL=$(jq -r '.reviewers.claude.model // "claude-opus-4.5"' "$CONFIG_FILE" 2>/dev/null || echo "claude-opus-4.5")
+fi
 
 echo "================================================"
 echo "  OpenClaw Code Review — PR #$PR_NUMBER"
@@ -82,10 +92,16 @@ $PR_FILES
 ## Diff:
 $PR_DIFF"
 
-    CODEX_REVIEW=$(codex --model gpt-5.3-codex \
+    # Write review input to temp file to avoid ARG_MAX limits on large diffs
+    REVIEW_TMPFILE=$(mktemp)
+    echo "$REVIEW_INPUT" > "$REVIEW_TMPFILE"
+
+    CODEX_REVIEW=$(codex --model "$CODEX_MODEL" \
         -c "model_reasoning_effort=high" \
         --dangerously-bypass-approvals-and-sandbox \
-        "$REVIEW_INPUT" 2>/dev/null || echo "[Codex review failed to run]")
+        "$(cat "$REVIEW_TMPFILE")" 2>/dev/null || echo "[Codex review failed to run]")
+
+    rm -f "$REVIEW_TMPFILE"
 
     echo "  Codex review complete. Posting to PR..."
     gh pr comment "$PR_NUMBER" --body "## Codex Code Review
@@ -110,9 +126,15 @@ $PR_FILES
 ## Diff:
 $PR_DIFF"
 
-    CLAUDE_REVIEW=$(claude --model claude-opus-4.5 \
+    # Write review input to temp file to avoid ARG_MAX limits on large diffs
+    REVIEW_TMPFILE=$(mktemp)
+    echo "$REVIEW_INPUT" > "$REVIEW_TMPFILE"
+
+    CLAUDE_REVIEW=$(claude --model "$CLAUDE_MODEL" \
         --dangerously-skip-permissions \
-        -p "$REVIEW_INPUT" 2>/dev/null || echo "[Claude review failed to run]")
+        -p "$(cat "$REVIEW_TMPFILE")" 2>/dev/null || echo "[Claude review failed to run]")
+
+    rm -f "$REVIEW_TMPFILE"
 
     echo "  Claude review complete. Posting to PR..."
     gh pr comment "$PR_NUMBER" --body "## Claude Code Review

@@ -114,13 +114,18 @@ if command -v jq &>/dev/null && [ -f "$TASKS_FILE" ]; then
         action "Archive $DONE_COUNT completed/cancelled tasks"
 
         if [ "$DRY_RUN" != "--dry-run" ]; then
-            # Save archived tasks to a separate file
+            # Save archived tasks (merge with existing archive if run multiple times per day)
             ARCHIVE_FILE="$REPO_ROOT/.clawdbot/logs/archived-tasks-$(date +%Y%m%d).json"
-            jq '[.tasks[] | select(.status == "done" or .status == "cancelled")]' "$TASKS_FILE" > "$ARCHIVE_FILE"
+            NEW_ARCHIVED=$(jq '[.tasks[] | select(.status == "done" or .status == "cancelled")]' "$TASKS_FILE")
+            if [ -f "$ARCHIVE_FILE" ]; then
+                jq -s '.[0] + .[1]' "$ARCHIVE_FILE" <(echo "$NEW_ARCHIVED") > "$ARCHIVE_FILE.tmp" && mv "$ARCHIVE_FILE.tmp" "$ARCHIVE_FILE"
+            else
+                echo "$NEW_ARCHIVED" > "$ARCHIVE_FILE"
+            fi
 
-            # Remove completed tasks from active list
+            # Remove completed tasks from active list (atomic write)
             UPDATED=$(jq '.tasks = [.tasks[] | select(.status != "done" and .status != "cancelled")]' "$TASKS_FILE")
-            echo "$UPDATED" > "$TASKS_FILE"
+            echo "$UPDATED" > "$TASKS_FILE.tmp" && mv "$TASKS_FILE.tmp" "$TASKS_FILE"
 
             ARCHIVED=$DONE_COUNT
             log "  Archived $ARCHIVED tasks to $ARCHIVE_FILE"

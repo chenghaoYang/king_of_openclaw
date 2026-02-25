@@ -21,7 +21,12 @@ const fs = require("fs");
 const path = require("path");
 
 const CONFIG_FILE = path.resolve(__dirname, "..", ".clawdbot", "config.json");
-const TASKS_FILE = path.resolve(__dirname, "..", ".clawdbot", "active-tasks.json");
+const TASKS_FILE = path.resolve(
+  __dirname,
+  "..",
+  ".clawdbot",
+  "active-tasks.json"
+);
 
 function loadConfig() {
   try {
@@ -44,7 +49,7 @@ function sendTelegram(botToken, chatId, message) {
     const data = JSON.stringify({
       chat_id: chatId,
       text: message,
-      parse_mode: "Markdown",
+      // Plain text (no parse_mode) to avoid Markdown/HTML parse errors from user input
     });
 
     const options = {
@@ -61,14 +66,27 @@ function sendTelegram(botToken, chatId, message) {
       let body = "";
       res.on("data", (chunk) => (body += chunk));
       res.on("end", () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(
+            new Error(
+              `Telegram API returned HTTP ${res.statusCode}: ${body}`
+            )
+          );
+          return;
+        }
         try {
           const result = JSON.parse(body);
           if (result.ok) resolve(result);
           else reject(new Error(`Telegram API error: ${body}`));
         } catch (e) {
-          reject(e);
+          reject(new Error(`Failed to parse Telegram response: ${body}`));
         }
       });
+    });
+
+    // 10-second timeout to prevent hanging in cron/background jobs
+    req.setTimeout(10000, () => {
+      req.destroy(new Error("Telegram request timed out after 10 seconds"));
     });
 
     req.on("error", reject);
@@ -83,20 +101,20 @@ function buildDailySummary() {
 
   const running = tasks.filter((t) => t.status === "running").length;
   const done = tasks.filter((t) => t.status === "done").length;
-  const failed = tasks.filter((t) => t.status === "agent_failed" || t.status === "ci_failed").length;
-  const prReady = tasks.filter((t) => t.status === "done" && t.note?.includes("all checks passed")).length;
+  const failed = tasks.filter(
+    (t) => t.status === "agent_failed" || t.status === "ci_failed"
+  ).length;
 
-  return `📊 *Daily Summary*
+  return `Daily Summary
 
-🔄 Running: ${running}
-✅ Completed: ${done}
-❌ Failed: ${failed}
-📝 PRs ready to merge: ${prReady}
+Running: ${running}
+Completed: ${done}
+Failed: ${failed}
 
 Total spawned: ${data.metadata.totalSpawned || 0}
 Total completed: ${data.metadata.totalCompleted || 0}
 
-_— OpenClaw Agent Swarm_`;
+-- OpenClaw Agent Swarm`;
 }
 
 async function main() {
@@ -111,7 +129,9 @@ async function main() {
   const chatId = process.env.TELEGRAM_CHAT_ID || telegram?.chatId;
 
   if (!botToken || !chatId) {
-    console.log("[telegram] Not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.");
+    console.log(
+      "[telegram] Not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+    );
     process.exit(0);
   }
 
@@ -124,22 +144,22 @@ async function main() {
 
   switch (event) {
     case "pr_ready":
-      text = `✅ *PR Ready for Review*\n\nTask: ${taskId}\n${message}\n\nAll checks passed. Ready to merge.\n\n_— OpenClaw_`;
+      text = `PR Ready for Review\n\nTask: ${taskId}\n${message}\n\nAll checks passed. Ready to merge.\n\n-- OpenClaw`;
       break;
     case "agent_failed":
-      text = `❌ *Agent Failed*\n\nTask: ${taskId}\n${message}\n\n_— OpenClaw_`;
+      text = `Agent Failed\n\nTask: ${taskId}\n${message}\n\n-- OpenClaw`;
       break;
     case "ci_failed":
-      text = `🔴 *CI Failed*\n\nTask: ${taskId}\n${message}\n\n_— OpenClaw_`;
+      text = `CI Failed\n\nTask: ${taskId}\n${message}\n\n-- OpenClaw`;
       break;
     case "daily_summary":
       text = buildDailySummary();
       break;
     case "morning_scan":
-      text = `🔍 *Morning Scan*\n\n${message}\n\n_— OpenClaw_`;
+      text = `Morning Scan\n\n${message}\n\n-- OpenClaw`;
       break;
     default:
-      text = `ℹ️ *OpenClaw Update*\n\nEvent: ${event}\nTask: ${taskId}\n${message}\n\n_— OpenClaw_`;
+      text = `OpenClaw Update\n\nEvent: ${event}\nTask: ${taskId}\n${message}\n\n-- OpenClaw`;
   }
 
   try {
@@ -150,4 +170,7 @@ async function main() {
   }
 }
 
-main();
+main().catch((e) => {
+  console.error("[telegram] Unexpected error:", e.message);
+  process.exit(1);
+});

@@ -51,53 +51,53 @@ if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
     fi
 fi
 
-# Build the message based on event type
+# Build the message based on event type (using real newlines, not \n literals)
 case "$EVENT" in
     pr_ready)
-        EMOJI="✅"
         TITLE="PR Ready for Review"
-        BODY="Task: $TASK_ID\n$MESSAGE\n\nAll checks passed. Ready to merge."
+        BODY="Task: ${TASK_ID}
+${MESSAGE}
+
+All checks passed. Ready to merge."
         ;;
     agent_failed)
-        EMOJI="❌"
         TITLE="Agent Failed"
-        BODY="Task: $TASK_ID\n$MESSAGE"
+        BODY="Task: ${TASK_ID}
+${MESSAGE}"
         ;;
     ci_failed)
-        EMOJI="🔴"
         TITLE="CI Failed"
-        BODY="Task: $TASK_ID\n$MESSAGE"
+        BODY="Task: ${TASK_ID}
+${MESSAGE}"
         ;;
     needs_attention)
-        EMOJI="⚠️"
         TITLE="Needs Human Attention"
         BODY="$MESSAGE"
         ;;
     all_done)
-        EMOJI="🎉"
         TITLE="All Tasks Complete"
         BODY="$MESSAGE"
         ;;
     *)
-        EMOJI="ℹ️"
         TITLE="OpenClaw Update"
-        BODY="Task: $TASK_ID\nEvent: $EVENT\n$MESSAGE"
+        BODY="Task: ${TASK_ID}
+Event: ${EVENT}
+${MESSAGE}"
         ;;
 esac
 
-# Format the Telegram message
-TELEGRAM_MSG="$EMOJI *$TITLE*
+# Format the Telegram message (plain text, no Markdown to avoid parse errors)
+TELEGRAM_MSG="${TITLE}
 
-$BODY
+${BODY}
 
-_— OpenClaw Agent Swarm_"
+-- OpenClaw Agent Swarm"
 
-# Send via Telegram Bot API
+# Send via Telegram Bot API using --data-urlencode to handle special characters
 RESPONSE=$(curl -s -X POST \
     "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    -d "chat_id=${CHAT_ID}" \
-    -d "text=${TELEGRAM_MSG}" \
-    -d "parse_mode=Markdown" \
+    --data-urlencode "chat_id=${CHAT_ID}" \
+    --data-urlencode "text=${TELEGRAM_MSG}" \
     2>/dev/null || echo '{"ok": false}')
 
 if echo "$RESPONSE" | grep -q '"ok":true'; then

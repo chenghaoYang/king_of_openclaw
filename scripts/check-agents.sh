@@ -72,6 +72,7 @@ while IFS= read -r TASK_ID; do
     BRANCH=$(echo "$TASK" | jq -r '.branch')
     STATUS=$(echo "$TASK" | jq -r '.status')
     RETRY_COUNT=$(echo "$TASK" | jq -r '.retryCount // 0')
+    RETRY_COUNT="${RETRY_COUNT:-0}"
     DESCRIPTION=$(echo "$TASK" | jq -r '.description')
 
     log ""
@@ -213,5 +214,5 @@ log "========================================="
 
 # Update last checked timestamp
 if [ -f "$TASKS_FILE" ]; then
-    jq '.metadata.lastChecked = now' "$TASKS_FILE" > "$TASKS_FILE.tmp" && mv "$TASKS_FILE.tmp" "$TASKS_FILE"
+    jq '.metadata.lastChecked = (now * 1000 | floor)' "$TASKS_FILE" > "$TASKS_FILE.tmp" && mv "$TASKS_FILE.tmp" "$TASKS_FILE"
 fi
