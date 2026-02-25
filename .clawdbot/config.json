@@ -1,0 +1,70 @@
+{
+  "orchestrator": {
+    "name": "Zoe",
+    "checkIntervalMinutes": 10,
+    "maxRetries": 3,
+    "maxConcurrentAgents": 5
+  },
+  "agents": {
+    "codex": {
+      "model": "gpt-5.3-codex",
+      "reasoningEffort": "high",
+      "defaultFor": ["backend", "bugs", "refactors", "multi-file"],
+      "command": "codex"
+    },
+    "claude": {
+      "model": "claude-opus-4.5",
+      "defaultFor": ["frontend", "git-ops", "quick-fixes"],
+      "command": "claude"
+    },
+    "gemini": {
+      "model": "gemini-2.5-pro",
+      "defaultFor": ["ui-design", "html-css-spec"],
+      "command": "gemini"
+    }
+  },
+  "reviewers": {
+    "codex": {
+      "enabled": true,
+      "model": "gpt-5.3-codex",
+      "focus": "edge-cases, logic errors, race conditions, missing error handling"
+    },
+    "gemini": {
+      "enabled": true,
+      "note": "Uses Gemini Code Assist GitHub App (free)",
+      "focus": "security issues, scalability problems"
+    },
+    "claude": {
+      "enabled": true,
+      "model": "claude-opus-4.5",
+      "focus": "critical issues only, skip 'consider adding' suggestions"
+    }
+  },
+  "notifications": {
+    "telegram": {
+      "enabled": false,
+      "botToken": "",
+      "chatId": "",
+      "notifyOn": ["pr_ready", "agent_failed", "ci_failed", "all_checks_passed"]
+    }
+  },
+  "ci": {
+    "requiredChecks": ["lint", "typecheck", "unit-tests"],
+    "optionalChecks": ["e2e", "playwright"],
+    "requireScreenshotForUI": true
+  },
+  "definitionOfDone": [
+    "PR created",
+    "Branch synced to main (no merge conflicts)",
+    "CI passing (lint, types, unit tests)",
+    "Codex review passed",
+    "Claude Code review passed",
+    "Gemini review passed",
+    "Screenshots included (if UI changes)"
+  ],
+  "paths": {
+    "worktreeBase": "../worktrees",
+    "logsDir": ".clawdbot/logs",
+    "promptsDir": ".clawdbot/prompts"
+  }
+}

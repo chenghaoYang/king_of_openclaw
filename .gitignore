@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.local
+*.log
+
+# Task registry is tracked, but local overrides are not
+.clawdbot/active-tasks.local.json
+
+# Worktree directories (they live outside the main repo)
+worktrees/
+
+# OS files
+.DS_Store
+Thumbs.db

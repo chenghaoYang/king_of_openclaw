@@ -1,0 +1,24 @@
+{
+  "name": "king-of-openclaw",
+  "version": "1.0.0",
+  "description": "OpenClaw Agent Swarm — AI orchestrator that manages a fleet of coding agents (Claude Code, Codex, Gemini) with automated monitoring, code review, and Telegram notifications.",
+  "author": "Chenghao",
+  "license": "MIT",
+  "scripts": {
+    "spawn": "./scripts/spawn-agent.sh",
+    "check": "./scripts/check-agents.sh",
+    "review": "./scripts/review-pr.sh",
+    "cleanup": "./scripts/cleanup-worktrees.sh",
+    "notify": "node scripts/telegram-notify.js",
+    "orchestrate": "node scripts/orchestrator.js",
+    "setup": "./scripts/setup.sh",
+    "cron:install": "./scripts/install-crons.sh",
+    "cron:remove": "./scripts/remove-crons.sh"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
