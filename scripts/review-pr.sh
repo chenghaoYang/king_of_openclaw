@@ -21,7 +21,7 @@ PROMPTS_DIR="$REPO_ROOT/.clawdbot/prompts"
 CONFIG_FILE="$REPO_ROOT/.clawdbot/config.json"
 
 # Parse optional --models flag
-MODELS="codex,claude"
+MODELS="codex,claude,gemini"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --models) MODELS="${2:?--models requires a value}"; shift 2 ;;
@@ -145,10 +145,67 @@ fi
 # --- Gemini Review ---
 if echo "$MODELS" | grep -q "gemini"; then
     echo ""
-    echo "[3.5/4] Gemini review..."
-    echo "  Gemini Code Assist reviews automatically via GitHub App."
-    echo "  If not installed, add it at: https://github.com/apps/gemini-code-assist"
-    echo "  Skipping manual Gemini review invocation."
+    echo "[3.5/4] Running Gemini review..."
+
+    GEMINI_PROMPT="You are reviewing a pull request. Focus on security issues, scalability problems, and architectural concerns.
+
+## Review Focus Areas
+- **Security vulnerabilities**: SQL injection, XSS, CSRF, auth bypass, insecure defaults
+- **Scalability issues**: N+1 queries, missing pagination, unbounded loops, memory leaks
+- **Architecture concerns**: Tight coupling, missing abstractions, pattern violations
+
+## Output Format
+For each issue found:
+\`\`\`
+**[SEVERITY]** file:line — Description
+Why: explanation
+Fix: suggested code change
+\`\`\`
+Severity: CRITICAL, WARNING, or INFO
+If no issues found, say: 'LGTM — no issues found.'
+
+## PR: $PR_TITLE
+
+## Changed Files:
+$PR_FILES
+
+## Diff:
+$PR_DIFF"
+
+    REVIEW_TMPFILE=$(mktemp)
+    echo "$GEMINI_PROMPT" > "$REVIEW_TMPFILE"
+
+    GEMINI_REVIEW=""
+    if command -v gemini &>/dev/null; then
+        GEMINI_MODEL=$(jq -r '.reviewers.gemini.model // "gemini-2.5-pro"' "$CONFIG_FILE" 2>/dev/null || echo "gemini-2.5-pro")
+        GEMINI_REVIEW=$(gemini --model "$GEMINI_MODEL" \
+            -p "$(cat "$REVIEW_TMPFILE")" 2>/dev/null || echo "[Gemini review failed to run]")
+    elif command -v gemini-cli &>/dev/null; then
+        GEMINI_MODEL=$(jq -r '.reviewers.gemini.model // "gemini-2.5-pro"' "$CONFIG_FILE" 2>/dev/null || echo "gemini-2.5-pro")
+        GEMINI_REVIEW=$(gemini-cli --model "$GEMINI_MODEL" \
+            -p "$(cat "$REVIEW_TMPFILE")" 2>/dev/null || echo "[Gemini review failed to run]")
+    elif [ -n "${GEMINI_API_KEY:-}" ]; then
+        GEMINI_MODEL=$(jq -r '.reviewers.gemini.model // "gemini-2.5-pro"' "$CONFIG_FILE" 2>/dev/null || echo "gemini-2.5-pro")
+        API_RESPONSE=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --rawfile prompt "$REVIEW_TMPFILE" '{contents: [{parts: [{text: $prompt}]}]}')" 2>/dev/null)
+
+        GEMINI_REVIEW=$(echo "$API_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "[Gemini API returned no content]"' 2>/dev/null || echo "[Gemini API call failed]")
+    else
+        echo "  No gemini CLI found and GEMINI_API_KEY not set."
+        echo "  Falling back to GitHub App (install at: https://github.com/apps/gemini-code-assist)"
+        GEMINI_REVIEW=""
+    fi
+
+    rm -f "$REVIEW_TMPFILE"
+
+    if [ -n "$GEMINI_REVIEW" ]; then
+        echo "  Gemini review complete. Posting to PR..."
+        gh pr comment "$PR_NUMBER" --body "## Gemini Code Review
+
+$GEMINI_REVIEW" 2>/dev/null || echo "  Failed to post Gemini review comment."
+    fi
 fi
 
 # --- Summary ---

@@ -19,7 +19,11 @@
 #     --prompt "<prompt>" \
 #     [--branch <branch-name>] \
 #     [--base <base-branch>] \
-#     [--no-install]
+#     [--no-install] \
+#     [--use-template]            # Fill agent prompt template with --prompt as task description
+#     [--context "<context>"]     # Business context (fills {{BUSINESS_CONTEXT}})
+#     [--files "<files>"]         # Files to focus on (fills {{RELEVANT_FILES}})
+#     [--constraints "<text>"]    # Constraints (fills {{CONSTRAINTS}})
 #
 # Example:
 #   ./scripts/spawn-agent.sh \
@@ -48,19 +52,27 @@ PROMPT=""
 BRANCH=""
 BASE_BRANCH="origin/main"
 SKIP_INSTALL=false
+USE_TEMPLATE=false
+CONTEXT=""
+FILES=""
+CONSTRAINTS=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --task-id)    TASK_ID="$2"; shift 2 ;;
+        --task-id)     TASK_ID="$2"; shift 2 ;;
         --description) DESCRIPTION="$2"; shift 2 ;;
-        --agent)      AGENT_TYPE="$2"; shift 2 ;;
-        --model)      MODEL="$2"; shift 2 ;;
-        --effort)     EFFORT="$2"; shift 2 ;;
-        --prompt)     PROMPT="$2"; shift 2 ;;
-        --branch)     BRANCH="$2"; shift 2 ;;
-        --base)       BASE_BRANCH="$2"; shift 2 ;;
-        --no-install) SKIP_INSTALL=true; shift ;;
+        --agent)       AGENT_TYPE="$2"; shift 2 ;;
+        --model)       MODEL="$2"; shift 2 ;;
+        --effort)      EFFORT="$2"; shift 2 ;;
+        --prompt)      PROMPT="$2"; shift 2 ;;
+        --branch)      BRANCH="$2"; shift 2 ;;
+        --base)        BASE_BRANCH="$2"; shift 2 ;;
+        --no-install)  SKIP_INSTALL=true; shift ;;
+        --use-template) USE_TEMPLATE=true; shift ;;
+        --context)     CONTEXT="$2"; shift 2 ;;
+        --files)       FILES="$2"; shift 2 ;;
+        --constraints) CONSTRAINTS="$2"; shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -78,6 +90,28 @@ fi
 # Defaults
 BRANCH="${BRANCH:-feat/$TASK_ID}"
 DESCRIPTION="${DESCRIPTION:-Task $TASK_ID}"
+
+# --- Template substitution ---
+# If --use-template is set, load the agent-specific prompt template and fill in placeholders.
+# Otherwise, use the raw --prompt value as-is.
+if [ "$USE_TEMPLATE" = true ]; then
+    TEMPLATE_FILE="$REPO_ROOT/.clawdbot/prompts/agent-${AGENT_TYPE}.md"
+    if [ -f "$TEMPLATE_FILE" ]; then
+        echo "[template] Loading prompt template from $TEMPLATE_FILE"
+        TEMPLATE_CONTENT=$(cat "$TEMPLATE_FILE")
+
+        # Substitute placeholders using simple string replacement
+        TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{TASK_DESCRIPTION\}\}/$PROMPT}"
+        TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{BUSINESS_CONTEXT\}\}/${CONTEXT:-No additional context provided.}}"
+        TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{RELEVANT_FILES\}\}/${FILES:-Agent should discover relevant files.}}"
+        TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{CONSTRAINTS\}\}/${CONSTRAINTS:-No special constraints.}}"
+
+        PROMPT="$TEMPLATE_CONTENT"
+        echo "[template] Template applied successfully."
+    else
+        echo "[template] WARNING: Template not found at $TEMPLATE_FILE — using raw prompt."
+    fi
+fi
 TMUX_SESSION="${AGENT_TYPE}-${TASK_ID}"
 
 # Read worktree base from config, fallback to ../worktrees

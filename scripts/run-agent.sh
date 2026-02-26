@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run-agent.sh — Launch a coding agent (Codex or Claude Code) with full logging
+# run-agent.sh — Launch a coding agent (Codex, Claude Code, or Gemini) with full logging
 #
 # Usage: ./scripts/run-agent.sh <task-id> <agent-type> <model> <effort> "<prompt>"
 #   task-id:    Unique identifier for the task (e.g., "custom-templates")
@@ -52,12 +52,38 @@ run_claude() {
 }
 
 run_gemini() {
-    # Gemini typically used for design specs, then handed off
-    # This is a placeholder — adapt to your Gemini CLI tool
-    echo "[Gemini] Design spec generation not yet automated via CLI." | tee -a "$LOG_FILE"
-    echo "[Gemini] Use the Gemini web UI or API for design tasks." | tee -a "$LOG_FILE"
-    echo "[Gemini] Prompt:" | tee -a "$LOG_FILE"
-    echo "$PROMPT" | tee -a "$LOG_FILE"
+    # Gemini CLI (gemini-cli) for design specs and code generation
+    if command -v gemini &>/dev/null; then
+        gemini --model "$MODEL" \
+            -p "$PROMPT" 2>&1 | tee -a "$LOG_FILE"
+    elif command -v gemini-cli &>/dev/null; then
+        gemini-cli --model "$MODEL" \
+            -p "$PROMPT" 2>&1 | tee -a "$LOG_FILE"
+    else
+        # Fallback: use the Gemini REST API via curl
+        echo "[Gemini] No gemini CLI found. Attempting API fallback..." | tee -a "$LOG_FILE"
+
+        GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+        if [ -z "$GEMINI_API_KEY" ]; then
+            echo "[Gemini] ERROR: No gemini CLI and no GEMINI_API_KEY set." | tee -a "$LOG_FILE"
+            echo "[Gemini] Install gemini-cli or set GEMINI_API_KEY env var." | tee -a "$LOG_FILE"
+            return 1
+        fi
+
+        API_MODEL="${MODEL:-gemini-2.5-pro}"
+        RESPONSE=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/${API_MODEL}:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg prompt "$PROMPT" '{contents: [{parts: [{text: $prompt}]}]}')" 2>&1)
+
+        if echo "$RESPONSE" | jq -e '.candidates[0].content.parts[0].text' &>/dev/null; then
+            echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' | tee -a "$LOG_FILE"
+        else
+            echo "[Gemini] API call failed:" | tee -a "$LOG_FILE"
+            echo "$RESPONSE" | tee -a "$LOG_FILE"
+            return 1
+        fi
+    fi
 }
 
 EXIT_CODE=0

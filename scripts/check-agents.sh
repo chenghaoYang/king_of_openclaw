@@ -147,9 +147,15 @@ while IFS= read -r TASK_ID; do
 
             # Auto-respawn if under retry limit
             if [ "$RETRY_COUNT" -lt "$MAX_RETRIES" ]; then
-                log "    RESPAWN: Retry $((RETRY_COUNT + 1))/$MAX_RETRIES"
+                log "    RESPAWN: Retry $((RETRY_COUNT + 1))/$MAX_RETRIES — invoking orchestrator respawn..."
                 NEEDS_ATTENTION+=("$TASK_ID: CI failed, auto-respawning (retry $((RETRY_COUNT + 1)))")
-                # The orchestrator (Zoe) handles the actual respawn with improved prompts
+                # Actually respawn via orchestrator with improved prompt context
+                if node "$SCRIPT_DIR/orchestrator.js" respawn "$TASK_ID" "CI failed on PR #$PR_NUMBER" 2>&1 | tee -a "$REPO_ROOT/.clawdbot/logs/monitor.log"; then
+                    log "    RESPAWN: Agent respawned successfully."
+                else
+                    log "    RESPAWN: Failed to respawn agent. Manual intervention needed."
+                    NEEDS_ATTENTION+=("$TASK_ID: Auto-respawn failed. Run manually: node scripts/orchestrator.js respawn $TASK_ID")
+                fi
             else
                 log "    BLOCKED: Max retries ($MAX_RETRIES) reached. Needs human attention."
                 NEEDS_ATTENTION+=("$TASK_ID: CI failed after $MAX_RETRIES retries. Needs human help.")
@@ -164,9 +170,16 @@ while IFS= read -r TASK_ID; do
         log "    ISSUE: Agent finished but no PR found."
 
         if [ "$RETRY_COUNT" -lt "$MAX_RETRIES" ]; then
-            log "    RESPAWN: Will retry ($((RETRY_COUNT + 1))/$MAX_RETRIES)"
+            log "    RESPAWN: Will retry ($((RETRY_COUNT + 1))/$MAX_RETRIES) — invoking orchestrator respawn..."
             "$SCRIPT_DIR/update-task.sh" "$TASK_ID" "agent_failed" "No PR created, tmux dead" 2>/dev/null || true
             NEEDS_ATTENTION+=("$TASK_ID: Agent died without creating PR. Retry $((RETRY_COUNT + 1)).")
+            # Actually respawn via orchestrator with improved prompt context
+            if node "$SCRIPT_DIR/orchestrator.js" respawn "$TASK_ID" "Agent crashed without creating PR" 2>&1 | tee -a "$REPO_ROOT/.clawdbot/logs/monitor.log"; then
+                log "    RESPAWN: Agent respawned successfully."
+            else
+                log "    RESPAWN: Failed to respawn agent. Manual intervention needed."
+                NEEDS_ATTENTION+=("$TASK_ID: Auto-respawn failed. Run manually: node scripts/orchestrator.js respawn $TASK_ID")
+            fi
         else
             log "    BLOCKED: Max retries reached. Needs human attention."
             "$SCRIPT_DIR/update-task.sh" "$TASK_ID" "agent_failed" "Max retries exceeded" 2>/dev/null || true
